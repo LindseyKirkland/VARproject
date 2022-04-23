@@ -1,0 +1,166 @@
+---
+title: "VAR Modeling"
+subtitle: "Housing Prices in Metro Atlanta"
+author: "Lindsey Kirkland"
+date: "`r format(Sys.Date(),'%B %d, %Y')`"
+output:
+  html_document:
+    df_page: paged
+    code_folding: hide
+    toc: no
+    fig_caption: yes
+    theme: lumen
+    toc_float: no
+  pdf_document:
+    toc: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())
+graphics.off()
+```
+
+
+## Introduction
+In this paper, two variables will be investivated using a Vector AutoRegression (VAR) model. VAR models are useful for predicting multiple time series variables using a single model
+
+**In the code block below is a list of packages that I will be using in order to do this analysis.**
+
+```{r load packages, message = FALSE, warning=FALSE}
+require(fpp3)
+require(tidyverse)
+require(dplyr)
+require(tidyquant)
+require(lubridate)
+require(timetk)
+require(vars)
+require(lmtest)
+require(kableExtra)
+```
+
+
+## Downloading the Data
+I am downloading two data sets from FRED(Federal Reserve Economic Data), to use for analysis. Both variables are in monthly increments and have been seasonally adjusted.  The variables are:
+
+**ATLA013BPPRIVSA**: New Private Housing Structures Authorized by Building Permits for Atlanta-Sandy Springs-Alpharetta, GA.(Later renamed to gAUTH)
+
+**ATXRSA**: S&P/Case-Shiller GA-Atlanta Home Price Index where January 2000=100.(Later renamed to gPRICE)
+
+
+ATLA013BPPRIVSA starts in January 1988 and ATXRSA starts in January 1991 so for the sake of comparison I will be loading in both variables from January 1991 to present day(April 2022). I believe these variables will have a dynamic relationship because the number of housing permits issued will cause a change in housing prices in the city. 
+
+```{r dl data, message = FALSE, warning=FALSE}
+varList <- c("ATLA013BPPRIVSA", "ATXRSA")
+X <- tq_get(varList, get = "economic.data", from = "1991-01-01") %>%
+  mutate(Month = yearmonth(date)) %>% dplyr::select(-date) %>%
+  as_tsibble(index = Month, key = symbol)
+Xw <- X %>%
+  pivot_wider(names_from = symbol, values_from = price) %>%
+  as_tsibble()
+```
+
+
+## Graphing the Data
+Below are graphs of the raw data in order to visualize their overall patterns. Again, note that ATXRSA is an index variable with the year 2000 equaling 100, or the baseline year.
+
+```{r plot data, message = FALSE, warning=FALSE}
+X %>% ggplot(aes(x = Month, y = price)) +
+  geom_line(color = "blue") +
+  facet_grid(vars(symbol), scales = "free_y")
+```
+
+
+## Checking Unit Roots
+Here, we are checking for the number of unit roots for both of our variables. This will help determine if we should use a VAR model or Vector Error Correction Model (VECM) later in the paper.
+
+
+```{r unitRoot, message = FALSE, warning=FALSE}
+X %>%
+  features(price, unitroot_ndiffs) %>%
+  kable(format = "html", table.attr = "style='width:30%;' ") %>%
+  kableExtra::kable_styling()
+```
+ 
+ 
+We see that the variable for the number of housing permits (ATLA013BPPRIVSA) has one unit root while the variable for housing prices (ATXRSA) has two. With this information, we will proceed using a VAR model. 
+ 
+Next, we will be organizing the variables and applying a lag of 12 in order to measure and visualize them. We will then estimate the VAR model with our two variables. 
+ 
+ 
+## Organizing the Variables
+
+```{r organizeVars, message = FALSE, warning=FALSE}
+Zhouse <- Xw %>%
+  mutate(gPRICE = 100 * difference(log(ATXRSA)),
+         gAUTH = 100 * difference(log(ATLA013BPPRIVSA))) %>%
+  dplyr::select(gAUTH, gPRICE) %>%
+  tidyr::drop_na()
+zhouse <- as.ts(Zhouse, start = c(1991, 2), frequency = 12)
+```
+
+
+```{r lagVars, message = FALSE, warning=FALSE}
+zh <- zhouse[,c(2,1)]
+tmp <- VARselect(zh,lag.max=12,type="const")
+tmp
+```
+
+
+## Estimating the VAR Model
+
+
+```{r estimateVar, message = FALSE, warning=FALSE}
+p <- tmp$selection[2]
+
+# estimate the VAR(p)
+var.house <- VAR(zh,p=p,type="const")
+summary(var.house)
+```
+
+
+## Granger Causality Tests
+
+
+The Granger Causality test is used to determine whether or not one time series is useful for forecasting another. We will first test if the number of authorized building permits causes housing prices in the Atlanta area to change, and then we will test if housing prices cause the number of authorized building permits to change around Atlanta. For this test, the F statistic is what we will be looking at to see if there is a causal relationship. If the probability is small, we reject the null hypothesis and conclude that there is a causal relationship.
+
+
+```{r testing1, message = FALSE, warning=FALSE}
+cat("H0: gAUTH does not cause gPRICE,  H1: it does \n")
+
+grangertest(gAUTH ~ gPRICE,order=p,data=zh)
+```
+
+
+
+```{r testing2, message = FALSE, warning=FALSE}
+cat("\nH0: gPRICE does not cause gAUTH,  H1: it does\n")
+
+grangertest(gAUTH ~ gPRICE,order=p,data=zh)
+```
+
+
+## Plotting the variables
+
+
+```{r plot, message = FALSE, warning=FALSE}
+plot(irf(var.house, n.ahead = 6, boot = TRUE ))
+
+```
+
+
+```{r fevd, message = FALSE, warning=FALSE}
+fevd(var.house, n.ahead = 12)
+
+```
+
+## Conclusion
+In this report, the Vector autoregressive (VAR) model was used in order to investigate the relationship between the number of approved housing permits in the metro Atlanta area with housing prices in Atlanta. We determined that the VAR model was the best one to use given the variables after doing a unit root test and finding that the permit variable had one unit root while the price variable had two. From our Granger causality tests, we were able to pose hypotheses about the causal relationship between our two variables- testing both if the number of housing permits caused a change in housing price and if housing price caused a change in the number of permits.
+
+
+## References
+Introduction to Econometrics with R by Christoph Hanck, Martin Arnold, Alexander Gerber, and Martin Schmelzer.
+
+https://fred.stlouisfed.org/
+
+
